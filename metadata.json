@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix Remix PMMRS Perú - Gestión y Revisión de Planes de Residuos Sólidos No Municipales",
+  "description": "Plataforma técnica para elaborar y auditar Planes de Minimización y Manejo de Residuos Sólidos No Municipales en el Perú bajo la R.M. 089-2023-MINAM, D.L. 1278 y NTP 900.058:2019.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
