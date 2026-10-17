@@ -1,0 +1,4 @@
+# Netlify redirects file for SPA routing and static team API fallback
+/api/team        /api/team.json    200
+/api/team/reset  /api/team.json    200
+/*               /index.html       200

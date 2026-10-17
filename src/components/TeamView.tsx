@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { TeamMember } from '../types/team';
-import { INITIAL_TEAM_MEMBERS } from '../data/teamData';
+import { INITIAL_TEAM_MEMBERS, INITIAL_TEAM_UPDATED_AT } from '../data/teamData';
 import {
   Users,
   UserPlus,
@@ -250,17 +250,36 @@ const OFFICIAL_TEAM_IDS = [
   'team-08',
 ];
 
-// Garantizar que todos los miembros oficiales de EcoSerpentis estén presentes siempre
+// Garantizar que todos los miembros oficiales de EcoSerpentis estén presentes y con sus datos oficiales actualizados
 function ensureOfficialMembers(list: any[]): TeamMember[] {
   if (!Array.isArray(list) || list.length === 0) return sanitizeMembers(INITIAL_TEAM_MEMBERS);
   const currentMap = new Map<string, any>();
   list.forEach((m) => {
     if (m && m.id) currentMap.set(m.id, m);
   });
-  // Asegurar que cada miembro oficial esté presente
+  // Asegurar que cada miembro oficial esté presente y que sus campos clave (CV, LinkedIn, colegiatura, datos de contacto)
+  // nunca queden vacíos o desactualizados por datos residuales de localStorage
   INITIAL_TEAM_MEMBERS.forEach((off) => {
-    if (!currentMap.has(off.id)) {
+    const existing = currentMap.get(off.id);
+    if (!existing) {
       currentMap.set(off.id, off);
+    } else {
+      currentMap.set(off.id, {
+        ...off,
+        ...existing,
+        nombre: existing.nombre || off.nombre,
+        cargo: existing.cargo || off.cargo,
+        especialidad: existing.especialidad || off.especialidad,
+        colegiatura: existing.colegiatura || off.colegiatura,
+        avatar: (existing.avatar && existing.avatar.length > 50) ? existing.avatar : off.avatar,
+        cvUrl: existing.cvUrl || off.cvUrl,
+        linkedinUrl: existing.linkedinUrl || off.linkedinUrl,
+        email: existing.email || off.email,
+        telefono: existing.telefono || off.telefono,
+        resumen: (existing.resumen && existing.resumen.length > 20) ? existing.resumen : off.resumen,
+        areas: (Array.isArray(existing.areas) && existing.areas.length > 0) ? existing.areas : off.areas,
+        destacado: existing.destacado !== undefined ? existing.destacado : off.destacado,
+      });
     }
   });
   return sanitizeMembers(Array.from(currentMap.values()));
@@ -274,12 +293,20 @@ export const TeamView: React.FC<TeamViewProps> = ({
   const [members, setMembers] = useState<TeamMember[]>(() => {
     if (typeof window !== 'undefined') {
       try {
+        const localUpdatedAt = Number(localStorage.getItem('pmrs_team_updated_at')) || 0;
         const saved = localStorage.getItem('pmrs_team_members');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            return ensureOfficialMembers(parsed);
-          }
+
+        // Si la versión guardada en localStorage es anterior a la versión del código (INITIAL_TEAM_UPDATED_AT)
+        // o no existe caché local, cargar inmediatamente la versión oficial más reciente
+        if (!saved || localUpdatedAt < INITIAL_TEAM_UPDATED_AT) {
+          const fresh = sanitizeMembers(INITIAL_TEAM_MEMBERS);
+          safeSaveToLocalStorage(fresh, INITIAL_TEAM_UPDATED_AT);
+          return fresh;
+        }
+
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return ensureOfficialMembers(parsed);
         }
       } catch (e) {
         console.error('Error al cargar equipo desde localStorage:', e);
@@ -310,59 +337,82 @@ export const TeamView: React.FC<TeamViewProps> = ({
   const [avatarUploadMode, setAvatarUploadMode] = useState<'url' | 'upload' | 'preset'>('preset');
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Al montar, sincronizar bidireccionalmente con el servidor con prioridad de marcas de tiempo
+  // Al montar, sincronizar bidireccionalmente con el servidor o endpoint estático para Netlify
   useEffect(() => {
     let isMounted = true;
-    fetch('/api/team')
-      .then((res) => {
-        if (!res.ok) throw new Error('Respuesta de red no satisfactoria');
-        return res.json();
-      })
-      .then((resData) => {
-        if (!isMounted) return;
-        if (resData?.ok && Array.isArray(resData.data) && resData.data.length > 0) {
-          const serverMembers = ensureOfficialMembers(resData.data as TeamMember[]);
-          const serverUpdatedAt = Number(resData.updatedAt) || 0;
-          const localSaved = localStorage.getItem('pmrs_team_members');
-          const localUpdatedAt = Number(localStorage.getItem('pmrs_team_updated_at')) || 0;
 
-          if (!localSaved) {
-            // Visitante nuevo o enlace compartido: adoptar el equipo guardado en el servidor
-            setMembers(serverMembers);
-            safeSaveToLocalStorage(serverMembers, serverUpdatedAt);
-            return;
-          }
-
-          let parsedLocal: TeamMember[] = serverMembers;
-          try {
-            parsedLocal = ensureOfficialMembers(JSON.parse(localSaved));
-          } catch (e) {
-            parsedLocal = serverMembers;
-          }
-
-          // Si hay datos locales, comparar marcas de tiempo:
-          if (serverUpdatedAt > localUpdatedAt) {
-            // El servidor tiene cambios más recientes guardados: adoptarlos
-            setMembers(serverMembers);
-            safeSaveToLocalStorage(serverMembers, serverUpdatedAt);
-          } else if (localUpdatedAt > serverUpdatedAt) {
-            // El navegador local tiene cambios pendientes no guardados en el servidor
-            setMembers(parsedLocal);
-            syncTeamToServer(parsedLocal, localUpdatedAt);
-          } else {
-            // Timestamps sincronizados o consistentes: priorizar serverMembers si contiene discrepancias
-            if (JSON.stringify(parsedLocal) !== JSON.stringify(serverMembers)) {
-              setMembers(serverMembers);
-              safeSaveToLocalStorage(serverMembers, serverUpdatedAt);
-            } else {
-              setMembers(parsedLocal);
+    const fetchTeamData = async () => {
+      let resJson: any = null;
+      try {
+        const res = await fetch('/api/team');
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          resJson = await res.json();
+        } else {
+          // Si es un entorno estático (como Netlify) donde /api/team retorna HTML por el rewrite SPA,
+          // cargar el endpoint estático /api/team.json
+          const fallbackRes = await fetch('/api/team.json').catch(() => null);
+          if (fallbackRes && fallbackRes.ok) {
+            const fallbackType = fallbackRes.headers.get('content-type') || '';
+            if (fallbackType.includes('application/json')) {
+              resJson = await fallbackRes.json();
             }
           }
         }
-      })
-      .catch((err) => {
-        console.warn('Verificación de equipo en servidor diferida:', err);
-      });
+      } catch (e) {
+        // Intento secundario hacia /api/team.json
+        try {
+          const fallbackRes = await fetch('/api/team.json');
+          if (fallbackRes && fallbackRes.ok) {
+            resJson = await fallbackRes.json();
+          }
+        } catch (e2) {}
+      }
+
+      if (!isMounted) return;
+
+      if (resJson?.ok && Array.isArray(resJson.data) && resJson.data.length > 0) {
+        const serverMembers = ensureOfficialMembers(resJson.data as TeamMember[]);
+        const serverUpdatedAt = Number(resJson.updatedAt) || INITIAL_TEAM_UPDATED_AT;
+        const localSaved = localStorage.getItem('pmrs_team_members');
+        const localUpdatedAt = Number(localStorage.getItem('pmrs_team_updated_at')) || 0;
+
+        if (!localSaved || serverUpdatedAt > localUpdatedAt) {
+          // Adoptar datos del servidor o archivo estático actualizado
+          setMembers(serverMembers);
+          safeSaveToLocalStorage(serverMembers, serverUpdatedAt);
+          return;
+        }
+
+        let parsedLocal: TeamMember[] = serverMembers;
+        try {
+          parsedLocal = ensureOfficialMembers(JSON.parse(localSaved));
+        } catch (e) {
+          parsedLocal = serverMembers;
+        }
+
+        if (localUpdatedAt > serverUpdatedAt) {
+          setMembers(parsedLocal);
+          syncTeamToServer(parsedLocal, localUpdatedAt);
+        } else {
+          setMembers(serverMembers);
+          safeSaveToLocalStorage(serverMembers, serverUpdatedAt);
+        }
+      } else {
+        // Si no hay respuesta de API (despliegue estático desconectado),
+        // verificar que localStorage no esté desactualizado respecto a INITIAL_TEAM_MEMBERS
+        const localUpdatedAt = Number(localStorage.getItem('pmrs_team_updated_at')) || 0;
+        if (localUpdatedAt < INITIAL_TEAM_UPDATED_AT) {
+          const fresh = sanitizeMembers(INITIAL_TEAM_MEMBERS);
+          setMembers(fresh);
+          safeSaveToLocalStorage(fresh, INITIAL_TEAM_UPDATED_AT);
+        }
+      }
+    };
+
+    fetchTeamData().catch((err) => {
+      console.warn('Verificación de equipo diferida:', err);
+    });
 
     return () => {
       isMounted = false;

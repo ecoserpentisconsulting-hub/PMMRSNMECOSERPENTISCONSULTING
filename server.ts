@@ -1137,10 +1137,29 @@ apiRouter.post('/team', (req, res) => {
     // Sincronizar también en src/data/teamData.ts para que cualquier rebuild estático o despliegue lo preserve
     const teamDataTsPath = path.resolve(__dirname, 'src', 'data', 'teamData.ts');
     try {
-      const tsContent = `import type { TeamMember } from '../types/team.ts';\n\nexport const INITIAL_TEAM_MEMBERS: TeamMember[] = ${JSON.stringify(protectedMembers, null, 2)};\n`;
+      const tsContent = `import type { TeamMember } from '../types/team.ts';\n\nexport const INITIAL_TEAM_UPDATED_AT = ${updatedAt};\n\nexport const INITIAL_TEAM_MEMBERS: TeamMember[] = ${JSON.stringify(protectedMembers, null, 2)};\n`;
       fs.writeFileSync(teamDataTsPath, tsContent, 'utf-8');
     } catch (e) {
       console.warn('Advertencia al sincronizar teamData.ts:', e);
+    }
+
+    // Sincronizar en public/api/team.json y public/api/team para que sitios estáticos (Netlify) siempre tengan los datos
+    try {
+      const publicApiDir = path.resolve(__dirname, 'public', 'api');
+      if (!fs.existsSync(publicApiDir)) {
+        fs.mkdirSync(publicApiDir, { recursive: true });
+      }
+      const publicPayload = {
+        ok: true,
+        data: protectedMembers,
+        total: protectedMembers.length,
+        updatedAt,
+        timestamp: new Date().toISOString(),
+      };
+      fs.writeFileSync(path.resolve(publicApiDir, 'team.json'), JSON.stringify(publicPayload, null, 2), 'utf-8');
+      fs.writeFileSync(path.resolve(publicApiDir, 'team'), JSON.stringify(publicPayload, null, 2), 'utf-8');
+    } catch (e) {
+      console.warn('Advertencia al sincronizar public/api/team.json:', e);
     }
 
     const metaFile = path.resolve(TEAM_DATA_DIR, 'team_meta.json');
